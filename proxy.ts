@@ -38,7 +38,7 @@ export async function proxy(request: NextRequest) {
 
   if (isAuthenticated && matchesRoute(pathname, publicRoutes)) {
     return withCookies(
-      NextResponse.redirect(new URL("/profile", request.url)),
+      NextResponse.redirect(new URL("/", request.url)),
       setCookies,
     );
   }
