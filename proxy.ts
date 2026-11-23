@@ -1,3 +1,4 @@
+import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
 import { parseSetCookie } from "cookie";
 import { checkSession } from "@/lib/api/serverApi";
@@ -10,49 +11,51 @@ const matchesRoute = (pathname: string, routes: string[]) =>
     (route) => pathname === route || pathname.startsWith(`${route}/`),
   );
 
-const refreshSession = async (): Promise<string[]> => {
+const refreshSession = async (): Promise<boolean> => {
   try {
     const response = await checkSession();
-    return response.data.success ? (response.headers["set-cookie"] ?? []) : [];
-  } catch {
-    return [];
-  }
-};
+    const setCookie = response.headers["set-cookie"];
 
-const withCookies = (response: NextResponse, setCookies: string[]) => {
-  setCookies.forEach((cookie) => response.headers.append("Set-Cookie", cookie));
-  return response;
+    if (!response.data.success || !setCookie) return false;
+
+    const cookieStore = await cookies();
+
+    for (const cookieStr of setCookie) {
+      const parsed = parseSetCookie(cookieStr);
+
+      if (parsed.value) {
+        cookieStore.set(parsed.name, parsed.value, parsed);
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
 };
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const accessToken = request.cookies.get("accessToken")?.value;
-  const refreshToken = request.cookies.get("refreshToken")?.value;
+  const cookieStore = await cookies();
+  const accessToken = cookieStore.get("accessToken")?.value;
+  const refreshToken = cookieStore.get("refreshToken")?.value;
 
-  const setCookies = !accessToken && refreshToken ? await refreshSession() : [];
-  const isAuthenticated = Boolean(accessToken) || setCookies.length > 0;
+  const isAuthenticated =
+    Boolean(accessToken) || (Boolean(refreshToken) && (await refreshSession()));
 
   if (!isAuthenticated && matchesRoute(pathname, privateRoutes)) {
     return NextResponse.redirect(new URL("/sign-in", request.url));
   }
 
   if (isAuthenticated && matchesRoute(pathname, publicRoutes)) {
-    return withCookies(
-      NextResponse.redirect(new URL("/", request.url)),
-      setCookies,
-    );
+    return NextResponse.redirect(new URL("/", request.url));
   }
 
   // Pass refreshed tokens to server components within this same request.
-  setCookies.forEach((cookie) => {
-    const { name, value } = parseSetCookie(cookie);
-    if (value) request.cookies.set(name, value);
-  });
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("Cookie", cookieStore.toString());
 
-  return withCookies(
-    NextResponse.next({ request: { headers: request.headers } }),
-    setCookies,
-  );
+  return NextResponse.next({ request: { headers: requestHeaders } });
 }
 
 export const config = {
